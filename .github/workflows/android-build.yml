@@ -1,0 +1,76 @@
+name: Build Android APK
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Extract project.zip if exists
+        run: |
+          if [ -f project.zip ]; then
+            echo "Detected project.zip, extracting..."
+            unzip -o project.zip
+            # Find where package.json is (in case of nested folders in ZIP)
+            PKG_PATH=$(find . -name package.json -not -path "*/node_modules/*" | head -n 1)
+            if [ -n "$PKG_PATH" ]; then
+              PKG_DIR=$(dirname "$PKG_PATH")
+              if [ "$PKG_DIR" != "." ]; then
+                echo "Moving files from $PKG_DIR to root..."
+                cp -rn "$PKG_DIR"/* . || true
+              fi
+            fi
+          else
+            echo "No project.zip found, building from root files."
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Build Next.js (Static Export)
+        run: npm run static-build
+
+      - name: Capacitor Sync
+        run: |
+          npx cap add android || true
+          npx cap sync android
+
+      - name: Permissions & Gradle Setup
+        run: |
+          cd android
+          chmod +x gradlew
+          # Inject exact alarm permissions directly into manifest
+          if ! grep -q "SCHEDULE_EXACT_ALARM" app/src/main/AndroidManifest.xml; then
+            sed -i '/<\/manifest>/i \    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />' app/src/main/AndroidManifest.xml
+          fi
+          if ! grep -q "USE_EXACT_ALARM" app/src/main/AndroidManifest.xml; then
+            sed -i '/<\/manifest>/i \    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />' app/src/main/AndroidManifest.xml
+          fi
+
+      - name: Build Debug APK
+        run: |
+          cd android
+          ./gradlew assembleDebug
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LifePlusPulse-Native-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
